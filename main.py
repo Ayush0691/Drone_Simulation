@@ -2,7 +2,7 @@ import numpy as np
 
 from quadcopter import Quadcopter
 from trajectory import TrajectoryGenerator
-
+from telemetry import Telemetry
 from controllers import CascadedController
 from sensors import SensorSuite
 from sensor_fusion import ComplementaryFilter
@@ -46,6 +46,11 @@ def main():
     battery = Battery()
 
     logger = FlightLogger("flight_log.csv")
+
+    telemetry = Telemetry(
+        save_csv=True,
+        filename="telemetry.csv",
+    )
 
     motor_objects = [
         Motor(),
@@ -231,6 +236,26 @@ def main():
         )
 
         #################################################
+        # Live Telemetry
+        #################################################
+
+        if abs(t - round(t)) < dt / 2:
+
+            telemetry.print_status(
+
+                t,
+
+                quad.state,
+
+                battery.voltage,
+
+                battery.percentage(),
+
+                np.mean(motor_speed),
+
+            )
+    
+        #################################################
         # Store Results
         #################################################
 
@@ -264,7 +289,6 @@ def main():
     # Finish Logging
     #################################################
 
-    logger.close()
 
     #################################################
     # Visualization
@@ -360,32 +384,37 @@ def main():
 
     )
 
+    logger.close()
     #################################################
     # Summary
     #################################################
 
-    print("\n========== Simulation Results ==========")
+    #################################################
+    # Telemetry Summary
+    #################################################
 
-    print(f"Altitude RMSE        : {altitude_rmse:.3f} m")
+    telemetry.print_summary(
 
-    print(f"Position RMSE        : {position_rmse:.3f} m")
+        altitude_rmse,
 
-    print(f"Overshoot            : {altitude_overshoot:.2f}%")
+        position_rmse,
 
-    print(f"Rise Time            : {altitude_rise:.2f} s")
+        altitude_overshoot,
 
-    print(f"Maximum Altitude     : {max(altitude_history):.2f} m")
+        altitude_rise,
 
-    print(f"Average Motor Speed  : {np.mean(motor_history):.1f} rad/s")
+        battery,
 
-    print(f"Battery Voltage      : {battery.voltage:.2f} V")
+        sim_time,
 
-    print(f"Battery Remaining    : {battery.percentage():.2f} %")
+    )
 
-    print("Flight Log Saved     : flight_log.csv")
+    telemetry.close()
 
-    print("========================================")
-
+print(f"Maximum Altitude     : {max(altitude_history):.2f} m")
+print(f"Average Motor Speed  : {np.mean(motor_history):.2f}")
+print("Flight Log Saved     : flight_log.csv")
+print("Telemetry Saved      : telemetry.csv")
 
 if __name__ == "__main__":
     main()

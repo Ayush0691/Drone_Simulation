@@ -1,0 +1,51 @@
+import numpy as np
+
+
+def rmse(reference, measured):
+
+    reference = np.array(reference)
+
+    measured = np.array(measured)
+
+    return np.sqrt(np.mean((reference - measured) ** 2))
+
+
+def steady_state_error(reference, measured):
+
+    return abs(reference[-1] - measured[-1])
+
+
+def overshoot(reference, measured):
+
+    target = reference[-1]
+
+    peak = np.max(measured)
+
+    return ((peak - target) / target) * 100
+
+
+def rise_time(time, signal, target):
+
+    lower = 0.1 * target
+
+    upper = 0.9 * target
+
+    t1 = None
+
+    t2 = None
+
+    for t, value in zip(time, signal):
+
+        if t1 is None and value >= lower:
+
+            t1 = t
+
+        if t2 is None and value >= upper:
+
+            t2 = t
+
+    if t1 is None or t2 is None:
+
+        return None
+
+    return t2 - t1

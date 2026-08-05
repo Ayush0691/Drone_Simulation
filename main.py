@@ -20,6 +20,11 @@ from metrics import (
     rise_time,
 )
 
+from battery import Battery
+from motor import Motor
+from logger import FlightLogger
+from animation import animate
+
 
 def main():
 
@@ -38,6 +43,17 @@ def main():
 
     fusion = ComplementaryFilter()
 
+    battery = Battery()
+
+    logger = FlightLogger("flight_log.csv")
+
+    motor_objects = [
+        Motor(),
+        Motor(),
+        Motor(),
+        Motor()
+    ]
+
     altitude_history = []
 
     position_history = []
@@ -46,19 +62,21 @@ def main():
 
     motor_history = []
 
+    battery_history = []
+
     position_error = []
 
     roll_history = []
 
     pitch_history = []
 
-    print("Starting Simulation...\n")
+    print("========== Drone Simulation ==========")
 
     for t in time:
 
-        #######################################################
-        # Desired Flight Path
-        #######################################################
+        #################################################
+        # Desired Trajectory
+        #################################################
 
         desired = trajectory.figure8(
             t,
@@ -69,9 +87,9 @@ def main():
 
         desired_history.append(desired.copy())
 
-        #######################################################
-        # Read Sensors
-        #######################################################
+        #################################################
+        # Sensor Readings
+        #################################################
 
         gps = sensors.gps(quad)
 
@@ -79,9 +97,9 @@ def main():
 
         accel = sensors.accelerometer(quad)
 
-        #######################################################
-        # Sensor Fusion
-        #######################################################
+        #################################################
+        # Complementary Filter
+        #################################################
 
         roll_est, pitch_est = fusion.update(
             gyro,
@@ -93,9 +111,9 @@ def main():
 
         pitch_history.append(pitch_est)
 
-        #######################################################
-        # Cascaded Controller
-        #######################################################
+        #################################################
+        # Flight Controller
+        #################################################
 
         thrust, roll_cmd, pitch_cmd, yaw_cmd = controller.update(
             desired,
@@ -103,148 +121,271 @@ def main():
             quad,
         )
 
-        #######################################################
+        #################################################
         # Motor Mixer
-        #######################################################
+        #################################################
 
         base_speed = np.sqrt(
-            max(thrust, 0.0)
-            / (4 * quad.b)
+            max(thrust, 0.0) /
+            (4 * quad.b)
         )
 
-        motors = np.array(
-            [
-                base_speed - roll_cmd + pitch_cmd + yaw_cmd,
-                base_speed + roll_cmd + pitch_cmd - yaw_cmd,
-                base_speed + roll_cmd - pitch_cmd + yaw_cmd,
-                base_speed - roll_cmd - pitch_cmd - yaw_cmd,
-            ]
-        )
+        motor_commands = np.array([
 
-        motors = np.clip(
-            motors,
+            base_speed - roll_cmd + pitch_cmd + yaw_cmd,
+
+            base_speed + roll_cmd + pitch_cmd - yaw_cmd,
+
+            base_speed + roll_cmd - pitch_cmd + yaw_cmd,
+
+            base_speed - roll_cmd - pitch_cmd - yaw_cmd,
+
+        ])
+
+        motor_commands = np.clip(
+            motor_commands,
             0,
             2500,
         )
 
-        motor_history.append(np.mean(motors))
+        #################################################
+        # ESC + Motor Dynamics
+        #################################################
 
-        #######################################################
+        motor_speed = np.zeros(4)
+
+        for i in range(4):
+
+            motor_speed[i] = motor_objects[i].update(
+                motor_commands[i],
+                dt,
+            )
+
+        motor_history.append(
+            np.mean(motor_speed)
+        )
+
+        #################################################
+        # Battery Simulation
+        #################################################
+
+        estimated_current = np.mean(
+            motor_speed
+        ) / 100
+
+        voltage = battery.update(
+            estimated_current,
+            dt,
+        )
+
+        battery_history.append(voltage)
+
+        #################################################
         # Wind Gust
-        #######################################################
+        #################################################
 
         if 4 <= t <= 6:
 
-            wind = np.array(
-                [0, 0, -3]
-            )
+            wind = np.array([
+
+                0,
+
+                0,
+
+                -3
+
+            ])
 
         else:
 
             wind = np.zeros(3)
 
-        #######################################################
-        # Physics Update
-        #######################################################
+        #################################################
+        # Physics Engine
+        #################################################
 
         quad.update(
-            motors,
+
+            motor_speed,
+
             external=wind,
+
             dt=dt,
+
         )
 
-        #######################################################
-        # Logging
-        #######################################################
+        #################################################
+        # Data Logging
+        #################################################
+
+        logger.log(
+
+            t,
+
+            quad.state,
+
+            voltage,
+
+            np.mean(motor_speed),
+
+        )
+
+        #################################################
+        # Store Results
+        #################################################
 
         current_position = quad.state[:3].copy()
 
-        position_history.append(current_position)
+        position_history.append(
 
-        altitude_history.append(current_position[2])
+            current_position
 
-        error = np.linalg.norm(
-            desired - current_position
         )
 
-        position_error.append(error)
+        altitude_history.append(
 
-    print("Simulation Complete.\n")
+            current_position[2]
 
-    ###########################################################
-    # Plots
-    ###########################################################
+        )
+
+        position_error.append(
+
+            np.linalg.norm(
+
+                desired -
+
+                current_position
+
+            )
+
+        )
+
+    #################################################
+    # Finish Logging
+    #################################################
+
+    logger.close()
+
+    #################################################
+    # Visualization
+    #################################################
 
     plot_altitude(
+
         time,
+
         altitude_history,
+
         10,
+
     )
 
     plot_motor_speed(
+
         time,
+
         motor_history,
+
     )
 
     plot_position_error(
+
         time,
+
         position_error,
+
     )
 
     plot_trajectory_3d(
+
         position_history,
+
         desired_history,
+
     )
 
-    ###########################################################
-    # Performance Metrics
-    ###########################################################
+    #################################################
+    # Animation
+    #################################################
+
+    animate(
+
+        position_history
+
+    )
+
+    #################################################
+    # Metrics
+    #################################################
 
     desired_altitude = np.full(
+
         len(time),
+
         10,
+
     )
 
     altitude_rmse = rmse(
+
         desired_altitude,
+
         altitude_history,
+
     )
 
     position_rmse = rmse(
+
         np.array(desired_history),
+
         np.array(position_history),
+
     )
 
     altitude_overshoot = overshoot(
+
         desired_altitude,
+
         altitude_history,
+
     )
 
     altitude_rise = rise_time(
+
         time,
+
         altitude_history,
+
         10,
+
     )
 
-    print("===================================")
-    print("Drone Flight Performance")
-    print("===================================")
+    #################################################
+    # Summary
+    #################################################
 
-    print(f"Altitude RMSE      : {altitude_rmse:.3f} m")
+    print("\n========== Simulation Results ==========")
 
-    print(f"Position RMSE      : {position_rmse:.3f} m")
+    print(f"Altitude RMSE        : {altitude_rmse:.3f} m")
 
-    print(f"Overshoot          : {altitude_overshoot:.2f}%")
+    print(f"Position RMSE        : {position_rmse:.3f} m")
 
-    print(f"Rise Time          : {altitude_rise:.2f} s")
+    print(f"Overshoot            : {altitude_overshoot:.2f}%")
 
-    print(f"Maximum Altitude   : {max(altitude_history):.2f} m")
+    print(f"Rise Time            : {altitude_rise:.2f} s")
 
-    print(f"Average Motor RPM  : {np.mean(motor_history):.2f}")
+    print(f"Maximum Altitude     : {max(altitude_history):.2f} m")
 
-    print("===================================")
+    print(f"Average Motor Speed  : {np.mean(motor_history):.1f} rad/s")
+
+    print(f"Battery Voltage      : {battery.voltage:.2f} V")
+
+    print(f"Battery Remaining    : {battery.percentage():.2f} %")
+
+    print("Flight Log Saved     : flight_log.csv")
+
+    print("========================================")
 
 
 if __name__ == "__main__":
-
     main()

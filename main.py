@@ -1,13 +1,19 @@
 import numpy as np
-import matplotlib.pyplot as plt
 
-from pid_controller import PIDController
 from quadcopter import Quadcopter
 from trajectory import TrajectoryGenerator
+
+from controllers import CascadedController
+from sensors import SensorSuite
+from sensor_fusion import ComplementaryFilter
+
 from visualization import (
     plot_altitude,
     plot_trajectory_3d,
+    plot_motor_speed,
+    plot_position_error,
 )
+
 from metrics import (
     rmse,
     overshoot,
@@ -24,15 +30,13 @@ def main():
 
     quad = Quadcopter()
 
-    traj = TrajectoryGenerator()
+    trajectory = TrajectoryGenerator()
 
-    altitude_pid = PIDController(
-        kp=8.5,
-        ki=2.1,
-        kd=4.8,
-        dt=dt,
-        output_limits=(0, 25)
-    )
+    controller = CascadedController(dt)
+
+    sensors = SensorSuite()
+
+    fusion = ComplementaryFilter()
 
     altitude_history = []
 
@@ -40,119 +44,207 @@ def main():
 
     desired_history = []
 
-    motor_speed_history = []
+    motor_history = []
 
-    target_altitude = 10.0
+    position_error = []
+
+    roll_history = []
+
+    pitch_history = []
+
+    print("Starting Simulation...\n")
 
     for t in time:
 
-        # Desired trajectory
-        desired_position = traj.figure8(
+        #######################################################
+        # Desired Flight Path
+        #######################################################
+
+        desired = trajectory.figure8(
             t,
             radius=5,
-            altitude=target_altitude,
-            omega=0.30
+            altitude=10,
+            omega=0.30,
         )
 
-        desired_history.append(desired_position)
+        desired_history.append(desired.copy())
 
-        # Current state
-        current_position = quad.state[0:3]
+        #######################################################
+        # Read Sensors
+        #######################################################
 
-        current_altitude = current_position[2]
+        gps = sensors.gps(quad)
 
-        # Altitude controller
-        thrust = altitude_pid.update(
-            target_altitude,
-            current_altitude
+        gyro = sensors.gyro(quad)
+
+        accel = sensors.accelerometer(quad)
+
+        #######################################################
+        # Sensor Fusion
+        #######################################################
+
+        roll_est, pitch_est = fusion.update(
+            gyro,
+            accel,
+            dt,
         )
 
-        # Convert thrust to motor speed
-        motor_speed = np.sqrt(
-            max(thrust, 0) /
-            (4 * quad.b)
+        roll_history.append(roll_est)
+
+        pitch_history.append(pitch_est)
+
+        #######################################################
+        # Cascaded Controller
+        #######################################################
+
+        thrust, roll_cmd, pitch_cmd, yaw_cmd = controller.update(
+            desired,
+            gps,
+            quad,
         )
 
-        motors = np.array([
-            motor_speed,
-            motor_speed,
-            motor_speed,
-            motor_speed
-        ])
+        #######################################################
+        # Motor Mixer
+        #######################################################
 
-        motor_speed_history.append(motor_speed)
+        base_speed = np.sqrt(
+            max(thrust, 0.0)
+            / (4 * quad.b)
+        )
 
-        # Wind disturbance
+        motors = np.array(
+            [
+                base_speed - roll_cmd + pitch_cmd + yaw_cmd,
+                base_speed + roll_cmd + pitch_cmd - yaw_cmd,
+                base_speed + roll_cmd - pitch_cmd + yaw_cmd,
+                base_speed - roll_cmd - pitch_cmd - yaw_cmd,
+            ]
+        )
+
+        motors = np.clip(
+            motors,
+            0,
+            2500,
+        )
+
+        motor_history.append(np.mean(motors))
+
+        #######################################################
+        # Wind Gust
+        #######################################################
+
         if 4 <= t <= 6:
-            wind = np.array([0.0, 0.0, -3.0])
+
+            wind = np.array(
+                [0, 0, -3]
+            )
+
         else:
+
             wind = np.zeros(3)
 
-        # Update quadcopter
+        #######################################################
+        # Physics Update
+        #######################################################
+
         quad.update(
             motors,
             external=wind,
-            dt=dt
+            dt=dt,
         )
 
-        altitude_history.append(
-            quad.state[2]
+        #######################################################
+        # Logging
+        #######################################################
+
+        current_position = quad.state[:3].copy()
+
+        position_history.append(current_position)
+
+        altitude_history.append(current_position[2])
+
+        error = np.linalg.norm(
+            desired - current_position
         )
 
-        position_history.append(
-            quad.state[:3].copy()
-        )
+        position_error.append(error)
 
-    # -----------------------------
-    # Visualization
-    # -----------------------------
+    print("Simulation Complete.\n")
+
+    ###########################################################
+    # Plots
+    ###########################################################
 
     plot_altitude(
         time,
         altitude_history,
-        target_altitude
+        10,
+    )
+
+    plot_motor_speed(
+        time,
+        motor_history,
+    )
+
+    plot_position_error(
+        time,
+        position_error,
     )
 
     plot_trajectory_3d(
         position_history,
-        desired_history
+        desired_history,
     )
 
-    # -----------------------------
+    ###########################################################
     # Performance Metrics
-    # -----------------------------
+    ###########################################################
 
     desired_altitude = np.full(
         len(time),
-        target_altitude
+        10,
     )
 
     altitude_rmse = rmse(
         desired_altitude,
-        altitude_history
+        altitude_history,
+    )
+
+    position_rmse = rmse(
+        np.array(desired_history),
+        np.array(position_history),
     )
 
     altitude_overshoot = overshoot(
         desired_altitude,
-        altitude_history
+        altitude_history,
     )
 
-    altitude_rise_time = rise_time(
+    altitude_rise = rise_time(
         time,
         altitude_history,
-        target_altitude
+        10,
     )
 
-    print("\n========== PERFORMANCE ==========")
+    print("===================================")
+    print("Drone Flight Performance")
+    print("===================================")
 
-    print(f"RMSE           : {altitude_rmse:.4f} m")
+    print(f"Altitude RMSE      : {altitude_rmse:.3f} m")
 
-    print(f"Overshoot      : {altitude_overshoot:.2f} %")
+    print(f"Position RMSE      : {position_rmse:.3f} m")
 
-    print(f"Rise Time      : {altitude_rise_time:.3f} s")
+    print(f"Overshoot          : {altitude_overshoot:.2f}%")
 
-    print("=================================\n")
+    print(f"Rise Time          : {altitude_rise:.2f} s")
+
+    print(f"Maximum Altitude   : {max(altitude_history):.2f} m")
+
+    print(f"Average Motor RPM  : {np.mean(motor_history):.2f}")
+
+    print("===================================")
 
 
 if __name__ == "__main__":
+
     main()
